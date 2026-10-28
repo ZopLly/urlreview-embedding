@@ -49,3 +49,14 @@ Final outcome: keep new local implementation branch and source directory in plac
 RED: PTY-тесты открытия по O/клику и отказа file:// не проходили до реализации, модуля browser.c не было. GREEN: модуль нормализует только HTTP(S), posix_spawnp передаёт URL одним аргументом без shell, UI запускает асинхронно и следит за результатом. Проверки используют подставной локальный xdg-open, без настоящего браузера.
 
 Final 1.1: чистая сборка с предупреждениями как ошибками и полный набор из 16 Python-тестов плюс C-проверки прошли. Независимый reviewer не нашёл существенных замечаний. Обновление упаковано отдельно от v1; настоящие сайты не открывались.
+
+## Local embeddings 2026-10-28
+Ruling: proceed on user's repeated approval of local model/search and request to implement; no further design permission round. Implementation choices (Python ONNX builder + C search) stated in commentary. Existing dedicated implementation branch reused; running review process keeps its old executable and CSV untouched. Category explanations briefly requested then cancelled before edits; unchanged.
+Spec/plan: docs/superpowers/{specs,plans}/2026-10-28-local-embeddings.md. Baseline full suite passed (16 Python tests + C tests).
+
+Task 1 GREEN: independent C fixture proves ranking, live action inclusion, stale descriptions, NaN and size rejection. Initial RED failed because embedding.h/c did not exist.
+Task 2 GREEN: Python window/tail, CP1251 exact read, source isolation, failure atomicity, invalid vectors/header tests pass. Actual ONNX INT8 model SHA-256 verified; offline smoke on synthetic Russian descriptions: tools↔tools 0.9114, tools↔music school 0.8084. Demo 4 records 1.94 s including model load; no real data measured. Python→C compatibility and stale/change-label behavior also tested.
+Task 3 GREEN: P without index and shortlist/detail/back PTY tests fail before implementation, pass after it. Original category guide unchanged. Fresh reviewer found no substantive code issues; documentation gap addressed in docs/embeddings.md and README. No real CSV read by assistant.
+Ruling: use Python 3.11–3.13 for pinned neural dependencies; host default is 3.14, so local venv created with available bundled Python 3.12.14. Portability instructions explain choosing PYTHON_BIN rather than copying venv. Model and environments excluded from Git/archive.
+
+Final verification 1.2: forced warnings-as-errors build, all 23 Python tests and 6 C test executables passed; ASan/UBSan core + embedding module passed. Actual CPU synthetic index read by C successfully. Keep local implementation branch, no merge target/upstream and no push requested. Deliver source archive excluding model/venv/user CSV; installed environment remains available in workspace.

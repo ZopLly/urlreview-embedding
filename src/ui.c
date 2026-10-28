@@ -15,6 +15,7 @@ typedef struct { wchar_t **items; size_t count; int width; } Lines;
 typedef struct {
     Store *store;
     const Guide *guide;
+    const Embedding *index;
     bool *deferred;
     size_t *history, history_count, history_pos;
     size_t row, scroll;
@@ -152,6 +153,62 @@ static void viewer(const char *title,const char *body) {
         scroll_key(key,&scroll,lines.count,LINES>5?LINES-5:1);
     }
     lines_free(&lines);
+}
+static void similar_detail(UI *ui,size_t row,float score) {
+    const Table *t=&ui->store->table;
+    const char *domain=cell(t,row,DOMAIN),*action=cell(t,row,ACTION),*category=cell(t,row,CLASS),
+        *label=cell(t,row,LABEL),*description=cell(t,row,DESCRIPTION);
+    size_t n=strlen(domain)+strlen(action)+strlen(category)+strlen(label)+strlen(description)+700;
+    char *body=mem_alloc(n);
+    snprintf(body,n,"%s\nСходство: %.3f — не вероятность правильной категории.\n\n"
+        "Принятая разметка:\naction: %s\nИсходный class: %s\nlabel: %s\n\n%s\nОписание:\n%s",
+        domain,(double)score,action,category,*label?label:"(пусто)",
+        !strcmp(action,"NOT_DESC")?"NOT_DESC: описание недостаточно; пример не подтверждает категорию.\n":"",
+        description);
+    viewer("Похожая запись",body);free(body);
+}
+static void similar(UI *ui) {
+    if(!ui->index||!ui->index->vectors) {
+        viewer("Похожие записи","Индекс не подключён.\n\n"
+            "После завершения сеанса подготовьте локальный индекс командой scripts/build-embeddings.sh.\n"
+            "Затем запустите программу с --embeddings ПУТЬ.uremb.\n\n"
+            "Инструкция: docs/embeddings.md. Разметка доступна и без индекса.");return;
+    }
+    EmbeddingHit hits[5];
+    size_t count=embedding_search(ui->index,&ui->store->table,ui->row,hits,5),cursor=0;
+    if(!count) {
+        viewer("Похожие записи","Похожих проверенных записей пока нет.\n\n"
+            "В поиск входят только записи с OK, ERROR или NOT_DESC и непустым вектором описания.\n"
+            "Для текущей записи тоже нужно непустое описание. Проверяйте новые записи — они появятся в поиске.");return;
+    }
+    while(!stopped) {
+        bool too_small=small_screen();
+        if(!too_small) {
+            header("Похожие — проверенные записи");
+            text(2,2,"Косинусное сходство — не вероятность правильной категории.",COLS-4);
+            size_t visible=(size_t)(LINES-7)/4;
+            size_t first=cursor>=visible?cursor-visible+1:0;
+            for(size_t i=first;i<count&&i<first+visible;i++) {
+                int y=4+(int)(i-first)*4;size_t r=hits[i].row;char line[1024];
+                if(i==cursor)attron(A_REVERSE);
+                snprintf(line,sizeof line,"%zu. %.3f  %s",i+1,(double)hits[i].score,cell(&ui->store->table,r,DOMAIN));
+                text(y,2,line,COLS-4);
+                if(i==cursor)attroff(A_REVERSE);
+                snprintf(line,sizeof line,"%s | class: %s | label: %s",cell(&ui->store->table,r,ACTION),
+                    cell(&ui->store->table,r,CLASS),cell(&ui->store->table,r,LABEL));
+                text(y+1,2,line,COLS-4);
+                if(!strcmp(cell(&ui->store->table,r,ACTION),"NOT_DESC"))
+                    text(y+2,2,"NOT_DESC: недостаточное описание, не эталон категории",COLS-4);
+                else text(y+2,2,cell(&ui->store->table,r,DESCRIPTION),COLS-4);
+            }
+            text(LINES-2,2,"↑↓ — выбрать   Enter — описание и разметка   Esc / Q — назад",COLS-4);refresh();
+        }
+        int key=read_key();if(key==27||key=='q'||key=='Q')break;
+        if(too_small)continue;
+        if((key==KEY_DOWN||key=='j')&&cursor+1<count)cursor++;
+        if((key==KEY_UP||key=='k')&&cursor)cursor--;
+        if(key=='\n'||key=='\r'||key==KEY_ENTER)similar_detail(ui,hits[cursor].row,hits[cursor].score);
+    }
 }
 static void category_help(const Guide *g,size_t index) {
     const Category *c=&g->items[index];
@@ -329,7 +386,7 @@ static void general_help(void) {
         "Решение сохраняется только после подтверждения и успешной записи. Исходный файл не меняется.\n"
         "При повторном запуске укажите те же исходник, рабочую копию, кодировку и разделитель.\n"
         "Не открывайте рабочую копию в другом редакторе одновременно.\n\n"
-        "Команда «Похожие» и эмбеддинги — следующий этап, в этой версии ещё не подключены.");
+        "P — похожие проверенные записи (нужен локальный индекс --embeddings). Сходство не означает правильность категории.");
 }
 static void render(UI *ui) {
     const Table *t=&ui->store->table;char top[256];
@@ -355,16 +412,16 @@ static void render(UI *ui) {
     mvhline(LINES-4,1,ACS_HLINE,COLS-2);
     text(LINES-3,2,ui->message,COLS-4);
     text(LINES-2,2,"1 OK   2 ERROR   3 NOT_DESC   S отложить   B назад   H справка   Q выход",COLS-4);
-    snprintf(top,sizeof top,"↑↓ / PgUp PgDn — описание    строка %zu из %zu",ui->scroll+1,ui->description.count);text(LINES-1,2,top,COLS-4);refresh();
+    snprintf(top,sizeof top,"P — похожие    ↑↓ / PgUp PgDn — описание    строка %zu из %zu",ui->scroll+1,ui->description.count);text(LINES-1,2,top,COLS-4);refresh();
 }
-int ui_run(Store *store,const Guide *guide) {
+int ui_run(Store *store,const Guide *guide,const Embedding *index) {
     stopped=0;
     void (*old_int)(int)=signal(SIGINT,interrupted),(*old_term)(int)=signal(SIGTERM,interrupted);
     if(!initscr()) {fputs("Не удалось открыть терминальный интерфейс.\n",stderr);return 1;}
     cbreak();noecho();keypad(stdscr,TRUE);curs_set(0);timeout(100);set_escdelay(25);
     mousemask(BUTTON1_PRESSED|BUTTON4_PRESSED|BUTTON5_PRESSED,NULL);
     if(has_colors()) {start_color();use_default_colors();init_pair(1,COLOR_CYAN,-1);}
-    UI ui={0};ui.store=store;ui.guide=guide;ui.deferred=mem_alloc(store->table.count*sizeof *ui.deferred);
+    UI ui={0};ui.store=store;ui.guide=guide;ui.index=index;ui.deferred=mem_alloc(store->table.count*sizeof *ui.deferred);
     visit(&ui,pending(&ui,0));
     bool quit=false;
     while(!quit && !stopped) {
@@ -380,6 +437,7 @@ int ui_run(Store *store,const Guide *guide) {
             if((key=='v'||key=='V') && store->table.count>1) visit(&ui,1);
             continue;
         }
+        if(key=='p'||key=='P') {similar(&ui);continue;}
         if(key=='o'||key=='O'||(key==KEY_MOUSE && domain_clicked(&ui))) {open_site(&ui);continue;}
         if(key>='1'&&key<='3') {
             static const char *actions[]={"OK","ERROR","NOT_DESC"};

@@ -13,3 +13,6 @@
 !demo/synthetic.csv
 __pycache__/
 *.pyc
+/.venv-embeddings/
+/models/
+*.uremb

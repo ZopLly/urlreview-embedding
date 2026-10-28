@@ -68,6 +68,28 @@ class UITests(unittest.TestCase):
         if self.term:self.term.close()
         self.assertEqual(self.input.read_bytes(),self.original)
         self.tmp.cleanup()
+    def test_similar_without_index_keeps_review_available(self):
+        t=self.start();t.wait('one.example');t.send('p');t.wait('Индекс не подключён')
+        t.send('q');t.wait('one.example');t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+        self.assertEqual([r[3] for r in self.rows()[1:]],['',''])
+    def test_similar_shows_reviewed_record_and_detail(self):
+        with self.input.open(newline='') as f: rows=list(csv.reader(f,delimiter=';'))
+        rows[2][3]='OK'
+        with self.input.open('w',newline='') as f:csv.writer(f,delimiter=';').writerows(rows)
+        self.original=self.input.read_bytes()
+        index=self.root/'test.uremb'
+        with index.open('wb') as f:
+            f.write(b'UREMB01\n'+struct.pack('<II',2,384))
+            for row in rows[1:]:
+                h=14695981039346656037
+                for byte in (row[0]+'\0'+row[4]).encode():h=((h^byte)*1099511628211)&((1<<64)-1)
+                f.write(struct.pack('<Q384f',h,1.,*([0.]*383)))
+        self.term=Terminal([self.input,self.output,'--guide',self.guide,'--embeddings',index])
+        t=self.term;t.wait('one.example');t.send('p');t.wait('two.example')
+        t.send('\n');t.wait('Принятая разметка')
+        t.send('q');t.wait('two.example');t.send('q');t.wait('one.example')
+        t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+        self.assertEqual(self.rows()[1][3],'')
     def test_multi_category_confirmation_and_resume(self):
         t=self.start();t.wait('one.example')
         t.send('2');t.wait('Категории')
