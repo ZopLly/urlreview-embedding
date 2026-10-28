@@ -60,3 +60,7 @@ Task 3 GREEN: P without index and shortlist/detail/back PTY tests fail before im
 Ruling: use Python 3.11–3.13 for pinned neural dependencies; host default is 3.14, so local venv created with available bundled Python 3.12.14. Portability instructions explain choosing PYTHON_BIN rather than copying venv. Model and environments excluded from Git/archive.
 
 Final verification 1.2: forced warnings-as-errors build, all 23 Python tests and 6 C test executables passed; ASan/UBSan core + embedding module passed. Actual CPU synthetic index read by C successfully. Keep local implementation branch, no merge target/upstream and no push requested. Deliver source archive excluding model/venv/user CSV; installed environment remains available in workspace.
+
+## Category explanations 2026-10-28
+User revived request for slightly fuller meanings. Expanded only the Russian title field for all 59 categories and added a two-line «Суть» preview following the selected category. Codes/order and original include/exclude fields byte-identical to previous commit (checked directly). RED: PTY test could not find preview. GREEN: preview follows selection, long explanation tail visible, H and cancellation retain behavior. No source CSV touched.
+Final category update: fresh independent review clean; all59 explanations fit two preview lines at minimum size, pagination updated. Forced -Werror full suite: 24 Python +6 C passed. Source/archive retain optional embeddings from 1.2; real CSV untouched.

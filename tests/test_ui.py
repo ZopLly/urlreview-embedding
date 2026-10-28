@@ -90,6 +90,13 @@ class UITests(unittest.TestCase):
         t.send('q');t.wait('two.example');t.send('q');t.wait('one.example')
         t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
         self.assertEqual(self.rows()[1][3],'')
+    def test_category_explanation_follows_cursor_and_full_help_remains(self):
+        self.guide.write_text('shopping\tМагазины и объявления о продаже\tПродажа товаров\t\nmusic\tИсполнители, записи, тексты песен, музыкальная индустрия, выступления, фестивали и концертные программы\tМузыкальные ресурсы\t\n')
+        t=self.start();t.wait('one.example');t.send('2');t.wait('Суть: Магазины')
+        t.send('j');t.wait('концертные программы')
+        t.send('h');t.wait('Включает:');t.send('q');t.wait('Суть:')
+        t.send(b'\x1b');t.wait('one.example');t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+        self.assertEqual(self.rows()[1][3],'')
     def test_multi_category_confirmation_and_resume(self):
         t=self.start();t.wait('one.example')
         t.send('2');t.wait('Категории')

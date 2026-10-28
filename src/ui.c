@@ -298,7 +298,7 @@ static int choose_categories(UI *ui,const char *action) {
                 !strcmp(action,"ERROR")?"ERROR: выберите правильные категории; пусто — подходящей нет.":
                 "NOT_DESC: категория, если установлена. Пусто разрешено по вашему правилу.";
             text(2,2,hint,COLS-4);
-            int height=LINES-8;
+            int height=LINES-11;
             size_t first=cursor>=(size_t)height?cursor-(size_t)height+1:0;
             for(int r=0;r<height && first+(size_t)r<g->count;r++) {
                 size_t i=first+(size_t)r;char item[1024];
@@ -307,6 +307,11 @@ static int choose_categories(UI *ui,const char *action) {
                 text(4+r,2,item,COLS-4);
                 if(i==cursor) attroff(A_REVERSE);
             }
+            size_t explanation_size=strlen(g->items[cursor].title)+32;
+            char *explanation=mem_alloc(explanation_size);
+            snprintf(explanation,explanation_size,"Суть: %s",g->items[cursor].title);
+            Lines brief={0};lines_make(&brief,explanation,COLS-4);
+            draw_lines(&brief,LINES-6,2,0);lines_free(&brief);free(explanation);
             char status[128];snprintf(status,sizeof status,"Категорий: %zu. Номер: %s%u",g->count,number?"":"— ",number);
             text(LINES-3,2,status,COLS-4);
             text(LINES-2,2,"↑↓ / J K — выбор   Space — отметить   номер+Enter — отметить",COLS-4);
@@ -320,8 +325,8 @@ static int choose_categories(UI *ui,const char *action) {
         }
         if(key==KEY_DOWN || key=='j') {if(cursor+1<g->count)cursor++;number=0;}
         if(key==KEY_UP || key=='k') {if(cursor)cursor--;number=0;}
-        if(key==KEY_NPAGE) {size_t step=LINES>8?(size_t)LINES-8:1;cursor=cursor+step<g->count?cursor+step:g->count-1;}
-        if(key==KEY_PPAGE) {size_t step=LINES>8?(size_t)LINES-8:1;cursor=cursor>step?cursor-step:0;}
+        if(key==KEY_NPAGE) {size_t step=LINES>11?(size_t)LINES-11:1;cursor=cursor+step<g->count?cursor+step:g->count-1;}
+        if(key==KEY_PPAGE) {size_t step=LINES>11?(size_t)LINES-11:1;cursor=cursor>step?cursor-step:0;}
         if(key==KEY_HOME) cursor=0;
         if(key==KEY_END) cursor=g->count-1;
         if(key==' ') {selected[cursor]=!selected[cursor];number=0;}
