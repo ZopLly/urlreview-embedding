@@ -154,18 +154,36 @@ static void viewer(const char *title,const char *body) {
     }
     lines_free(&lines);
 }
+static char *final_categories(const Table *t,size_t row) {
+    const char *category=cell(t,row,CLASS),*label=cell(t,row,LABEL);
+    bool ok=!strcmp(cell(t,row,ACTION),"OK");
+    char *result=mem_alloc(strlen(category)+2*strlen(label)+64);
+    if(ok)strcpy(result,category);
+    char *copy=str_copy(label),*save=NULL;
+    for(char *part=strtok_r(copy,",",&save);part;part=strtok_r(NULL,",",&save)) {
+        while(isspace((unsigned char)*part))part++;
+        size_t n=strlen(part);while(n&&isspace((unsigned char)part[n-1]))part[--n]=0;
+        if(!n||(ok&&!strcmp(part,category)))continue;
+        if(*result)strcat(result,", ");
+        strcat(result,part);
+    }
+    free(copy);
+    if(!*result)strcpy(result,"не определены");
+    return result;
+}
 static void similar_detail(UI *ui,size_t row,float score) {
     const Table *t=&ui->store->table;
     const char *domain=cell(t,row,DOMAIN),*action=cell(t,row,ACTION),*category=cell(t,row,CLASS),
         *label=cell(t,row,LABEL),*description=cell(t,row,DESCRIPTION);
-    size_t n=strlen(domain)+strlen(action)+strlen(category)+strlen(label)+strlen(description)+700;
+    char *final=final_categories(t,row);
+    size_t n=strlen(domain)+strlen(action)+strlen(category)+strlen(label)+strlen(final)+strlen(description)+900;
     char *body=mem_alloc(n);
-    snprintf(body,n,"%s\nСходство: %.3f — не вероятность правильной категории.\n\n"
-        "Принятая разметка:\naction: %s\nИсходный class: %s\nlabel: %s\n\n%s\nОписание:\n%s",
-        domain,(double)score,action,category,*label?label:"(пусто)",
+    snprintf(body,n,"Запись №%zu | Строка таблицы: %zu (с заголовком)\n%s\nСходство: %.3f — не вероятность правильной категории.\n\n"
+        "Принятая разметка:\nРешение: %s\nИсходный class: %s\nlabel: %s\nИтоговые категории: %s\n\n%s\nОписание:\n%s",
+        row,row+1,domain,(double)score,action,category,*label?label:"(пусто)",final,
         !strcmp(action,"NOT_DESC")?"NOT_DESC: описание недостаточно; пример не подтверждает категорию.\n":"",
         description);
-    viewer("Похожая запись",body);free(body);
+    viewer("Похожая запись",body);free(body);free(final);
 }
 static void similar(UI *ui) {
     if(!ui->index||!ui->index->vectors) {
@@ -186,20 +204,22 @@ static void similar(UI *ui) {
         if(!too_small) {
             header("Похожие — проверенные записи");
             text(2,2,"Косинусное сходство — не вероятность правильной категории.",COLS-4);
-            size_t visible=(size_t)(LINES-7)/4;
+            size_t visible=(size_t)(LINES-7)/5;
             size_t first=cursor>=visible?cursor-visible+1:0;
             for(size_t i=first;i<count&&i<first+visible;i++) {
-                int y=4+(int)(i-first)*4;size_t r=hits[i].row;char line[1024];
+                int y=4+(int)(i-first)*5;size_t r=hits[i].row;char line[1024];
                 if(i==cursor)attron(A_REVERSE);
-                snprintf(line,sizeof line,"%zu. %.3f  %s",i+1,(double)hits[i].score,cell(&ui->store->table,r,DOMAIN));
+                snprintf(line,sizeof line,"%zu. Запись №%zu | %.3f | %s",i+1,r,(double)hits[i].score,cell(&ui->store->table,r,DOMAIN));
                 text(y,2,line,COLS-4);
                 if(i==cursor)attroff(A_REVERSE);
-                snprintf(line,sizeof line,"%s | class: %s | label: %s",cell(&ui->store->table,r,ACTION),
-                    cell(&ui->store->table,r,CLASS),cell(&ui->store->table,r,LABEL));
+                snprintf(line,sizeof line,"Строка таблицы: %zu | Решение: %s",r+1,cell(&ui->store->table,r,ACTION));
                 text(y+1,2,line,COLS-4);
+                char *final=final_categories(&ui->store->table,r);
+                snprintf(line,sizeof line,"Итог: %s",final);free(final);
+                text(y+2,2,line,COLS-4);
                 if(!strcmp(cell(&ui->store->table,r,ACTION),"NOT_DESC"))
-                    text(y+2,2,"NOT_DESC: недостаточное описание, не эталон категории",COLS-4);
-                else text(y+2,2,cell(&ui->store->table,r,DESCRIPTION),COLS-4);
+                    text(y+3,2,"NOT_DESC: недостаточное описание, не эталон категории",COLS-4);
+                else text(y+3,2,cell(&ui->store->table,r,DESCRIPTION),COLS-4);
             }
             text(LINES-2,2,"↑↓ — выбрать   Enter — описание и разметка   Esc / Q — назад",COLS-4);refresh();
         }

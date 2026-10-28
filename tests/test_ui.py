@@ -33,7 +33,9 @@ class Terminal:
             if select.select([self.master],[],[],.1)[0]:
                 try: self.output += os.read(self.master,65536)
                 except OSError: raise AssertionError(f'PTY closed: {self.output[-1200:]!r}')
+        output=self.output
         self.output=b''
+        return output
     def send(self, keys):
         os.write(self.master,keys.encode() if isinstance(keys,str) else keys)
     def resize(self,h,w):
@@ -90,6 +92,40 @@ class UITests(unittest.TestCase):
         t.send('q');t.wait('two.example');t.send('q');t.wait('one.example')
         t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
         self.assertEqual(self.rows()[1][3],'')
+    def test_similar_identifies_table_row_decision_and_final_categories(self):
+        cases=[('OK','','music'),('OK','shopping','music, shopping'),
+               ('OK','music, shopping','music, shopping'),('ERROR','shopping','shopping'),
+               ('ERROR','','не определены'),('NOT_DESC','','не определены'),
+               ('NOT_DESC','shopping','shopping')]
+        for action,label,expected in cases:
+            with self.subTest(action=action,label=label):
+                if self.term:self.term.close();self.term=None
+                self.output.unlink(missing_ok=True)
+                with self.input.open(newline='') as f:rows=list(csv.reader(f,delimiter=';'))
+                rows[2][2:4]=[label,action]
+                with self.input.open('w',newline='') as f:csv.writer(f,delimiter=';').writerows(rows)
+                self.original=self.input.read_bytes()
+                index=self.root/'test.uremb'
+                with index.open('wb') as f:
+                    f.write(b'UREMB01\n'+struct.pack('<II',2,384))
+                    for row in rows[1:]:
+                        h=14695981039346656037
+                        for byte in (row[0]+'\0'+row[4]).encode():h=((h^byte)*1099511628211)&((1<<64)-1)
+                        f.write(struct.pack('<Q384f',h,1.,*([0.]*383)))
+                self.term=Terminal([self.input,self.output,'--guide',self.guide,'--embeddings',index])
+                t=self.term;t.wait('one.example');t.send('p')
+                screen=t.wait('Итог: '+expected).decode()
+                self.assertIn('Запись №2',screen)
+                self.assertIn('Строка таблицы: 3',screen)
+                self.assertIn('Решение: '+action,screen)
+                t.send('\n');detail=t.wait('Итоговые категории: '+expected).decode()
+                self.assertIn('Запись №2',detail)
+                self.assertIn('Строка таблицы: 3',detail)
+                self.assertIn('Исходный class: music',detail)
+                self.assertIn('Решение: '+action,detail)
+                t.send('q');t.wait('two.example');t.send('q');t.wait('one.example')
+                t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+                self.assertEqual(self.rows()[2][2:4],[label,action])
     def test_category_explanation_follows_cursor_and_full_help_remains(self):
         self.guide.write_text('shopping\tМагазины и объявления о продаже\tПродажа товаров\t\nmusic\tИсполнители, записи, тексты песен, музыкальная индустрия, выступления, фестивали и концертные программы\tМузыкальные ресурсы\t\n')
         t=self.start();t.wait('one.example');t.send('2');t.wait('Суть: Магазины')
