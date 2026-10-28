@@ -2,7 +2,7 @@ CC ?= cc
 CPPFLAGS += -D_XOPEN_SOURCE=700 -D_DEFAULT_SOURCE -Isrc
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c17 -Wall -Wextra -Wpedantic
-NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw)
+NCURSES_CFLAGS := $(filter-out -D_XOPEN_SOURCE=% -D_DEFAULT_SOURCE,$(shell pkg-config --cflags ncursesw))
 NCURSES_LIBS := $(shell pkg-config --libs ncursesw)
 CORE = src/csv.c src/store.c
 
