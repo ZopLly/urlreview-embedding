@@ -17,10 +17,10 @@ BIN = ROOT / 'url-review'
 HEADER = ['domain','class','label','action','description']
 
 class Terminal:
-    def __init__(self, args, extra_env=None):
+    def __init__(self, args, extra_env=None, executable=None):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, 0x5414, struct.pack('HHHH',32,115,0,0))
-        self.proc = subprocess.Popen([str(BIN),*map(str,args)],stdin=slave,stdout=slave,stderr=slave,
+        self.proc = subprocess.Popen([str(executable or BIN),*map(str,args)],stdin=slave,stdout=slave,stderr=slave,
                                      env={**os.environ,'TERM':'xterm-256color','LANG':'C.UTF-8',**(extra_env or {})})
         os.close(slave)
         self.output = b''
@@ -96,5 +96,28 @@ class UITests(unittest.TestCase):
         self.term=Terminal([self.input,self.output,'--guide',self.guide],{'LANG':'C','LC_ALL':'C'})
         self.term.wait('не проверено')
         self.term.send('q');self.assertEqual(self.term.proc.wait(timeout=3),0)
+    def test_small_window_does_not_confirm_unseen_decision(self):
+        t=self.start();t.wait('one.example');t.send('2');t.wait('Категории')
+        t.resize(7,25);time.sleep(.15);t.send('\n\n');time.sleep(.15)
+        self.assertEqual(self.rows()[1][3],'')
+        t.resize(32,115);time.sleep(.1);t.send('q');t.wait('Несохранённое');t.send('d')
+        self.assertEqual(t.proc.wait(timeout=3),0)
+    def test_long_confirmation_can_scroll_to_last_selected_category(self):
+        codes=[f'category_{i}_'+('x'*35) for i in range(29)]+['zz_last_marker']
+        self.guide.write_text(''.join(f'{c}\tКатегория\tОписание\t\n' for c in codes))
+        t=self.start();t.wait('one.example');t.resize(18,65);time.sleep(.1)
+        t.send('2');t.wait('Категории')
+        t.send(''.join(f'{i}\n' for i in range(1,len(codes)+1))+'\n');t.wait('Подтверждение')
+        t.send('G');t.wait('zz_last_marker')
+        t.send('\n');time.sleep(.15)
+        self.assertEqual(self.rows()[1][2],','.join(codes))
+        t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+    def test_uncertain_sync_warns_and_waits_for_retry(self):
+        self.term=Terminal([self.input,self.output,'--guide',self.guide],executable=ROOT/'build/url-review-sync')
+        t=self.term;t.wait('one.example');t.send('2');t.wait('Категории')
+        t.send(' \n');t.wait('Подтверждение');t.send('\n');t.wait('переход остановлен')
+        self.assertEqual(self.rows()[1][3],'ERROR')
+        t.send(b'\x1b');time.sleep(.1);t.send('\n');t.wait('Второй сайт')
+        t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
 
 if __name__=='__main__':unittest.main()

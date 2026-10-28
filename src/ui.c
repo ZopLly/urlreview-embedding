@@ -112,15 +112,16 @@ static void category_help(const Guide *g,size_t index) {
     snprintf(body,n,"%s — %s\n\nВключает:\n%s\n\nНе включает:\n%s",c->code,c->title,c->includes,*c->excludes?c->excludes:"Отдельные исключения в справочнике не указаны.");
     viewer("Справка по категории",body);free(body);
 }
-static int exit_draft(void) {
+static int exit_draft(bool uncertain) {
     while(!stopped) {
-        if(!small_screen()) {
-            header("Несохранённое решение");
+        bool too_small=small_screen();
+        if(!too_small) {
+            header(uncertain?"Запись требует проверки":"Несохранённое решение");
             text(4,2,"S — перейти к сохранению",COLS-4);
-            text(6,2,"D — выйти без этого решения",COLS-4);
+            text(6,2,uncertain?"D — выйти без новой попытки записи":"D — выйти без этого решения",COLS-4);
             text(8,2,"C / Escape — продолжить редактирование",COLS-4);refresh();
         }
-        int key=read_key();if(key=='s'||key=='S') return 1;
+        int key=read_key();if(!too_small && (key=='s'||key=='S')) return 1;
         if(key=='d'||key=='D') return 2;
         if(key=='c'||key=='C'||key==27) return 0;
     }
@@ -134,29 +135,42 @@ static char *selected_label(const Guide *g,const bool *selected) {
 }
 /* Return 0 to edit categories, 1 after durable save, 2 to quit. */
 static int confirm(UI *ui,const char *action,const char *label) {
-    char err[ERR_SIZE];
+    char err[ERR_SIZE];bool uncertain=false;size_t scroll=0;Lines content={0};
+    const Table *t=&ui->store->table;
+    size_t size=strlen(cell(t,ui->row,DOMAIN))+strlen(cell(t,ui->row,CLASS))+strlen(label)+strlen(cell(t,ui->row,LABEL))+strlen(action)+400;
+    char *body=mem_alloc(size);
+    snprintf(body,size,"%s\nИсходный class: %s\n\nДействие: %s\n\nКатегории (label):\n%s\n\nПрежний label:\n%s",cell(t,ui->row,DOMAIN),cell(t,ui->row,CLASS),action,*label?label:"(пусто)",*cell(t,ui->row,LABEL)?cell(t,ui->row,LABEL):"(пусто)");
+    int outcome=2;
     while(!stopped) {
-        if(!small_screen()) {
-            header("Подтверждение решения");
-            text(3,2,cell(&ui->store->table,ui->row,DOMAIN),COLS-4);
-            char line[256];snprintf(line,sizeof line,"Действие: %s",action);text(5,2,line,COLS-4);
-            text(7,2,"Категории (label):",COLS-4);
-            Lines labels={0};lines_make(&labels,*label?label:"(пусто)",COLS-4);
-            draw_lines(&labels,8,LINES-14,0);lines_free(&labels);
-            text(LINES-5,2,"Прежний label:",COLS-4);text(LINES-4,2,cell(&ui->store->table,ui->row,LABEL),COLS-4);
-            text(LINES-2,2,"Enter — сохранить и продолжить",COLS-4);
-            text(LINES-1,2,"Escape — изменить категории    Q — выход",COLS-4);refresh();
+        bool too_small=small_screen();
+        if(!too_small) {
+            if(content.width!=COLS-4)lines_make(&content,body,COLS-4);
+            scroll_key(0,&scroll,content.count,LINES-6);
+            header(uncertain?"Запись требует проверки":"Подтверждение решения");
+            draw_lines(&content,3,LINES-6,scroll);
+            text(LINES-2,2,uncertain?"Enter — повторить сохранение":"Enter — сохранить и продолжить",COLS-4);
+            text(LINES-1,2,"↑↓ PgUp/PgDn Home/End — просмотр   Esc — изменить   Q — выход",COLS-4);refresh();
         }
         int key=read_key();
-        if(key==27) return 0;
-        bool save=key=='\n'||key==KEY_ENTER||key=='\r';
-        if(key=='q'||key=='Q') {int decision=exit_draft();if(decision==2)return 2;save=decision==1;}
-        if(save) {
-            if(store_commit(ui->store,ui->row,action,label,err)) {snprintf(ui->message,sizeof ui->message,"Сохранено: %s",action);return 1;}
-            viewer("Ошибка сохранения — решение пока не записано",err);
+        if(key==27){outcome=0;break;}
+        if(too_small) {
+            if((key=='q'||key=='Q') && exit_draft(uncertain)==2)break;
+            continue;
         }
+        bool save=key=='\n'||key==KEY_ENTER||key=='\r';
+        if(key=='q'||key=='Q') {int decision=exit_draft(uncertain);if(decision==2)break;save=decision==1;}
+        if(save) {
+            SaveResult result=store_commit(ui->store,ui->row,action,label,err);
+            if(result==SAVE_OK) {snprintf(ui->message,sizeof ui->message,"Сохранено: %s",action);outcome=1;break;}
+            if(result==SAVE_UNCERTAIN) {
+                uncertain=true;
+                snprintf(ui->message,sizeof ui->message,"Файл заменён, но надёжность записи не подтверждена. Проверьте рабочую копию.");
+                viewer("Запись требует проверки — переход остановлен",err);
+            } else viewer("Ошибка сохранения — новая попытка не записана",err);
+        }
+        scroll_key(key,&scroll,content.count,LINES-6);
     }
-    return 2;
+    lines_free(&content);free(body);return outcome;
 }
 static void preselect(const Guide *g,const char *label,bool *selected) {
     char *copy=str_copy(label),*save=NULL;
@@ -172,7 +186,8 @@ static int choose_categories(UI *ui,const char *action) {
     preselect(g,cell(&ui->store->table,ui->row,LABEL),selected);
     size_t cursor=0;unsigned number=0;
     while(!stopped) {
-        if(!small_screen()) {
+        bool too_small=small_screen();
+        if(!too_small) {
             header("Категории");
             const char *hint=!strcmp(action,"OK")?"OK: выберите дополнительные категории; Enter — без дополнительных.":
                 !strcmp(action,"ERROR")?"ERROR: выберите правильные категории; пусто — подходящей нет.":
@@ -194,6 +209,10 @@ static int choose_categories(UI *ui,const char *action) {
         }
         int key=read_key();
         if(key==27) {free(selected);return 0;}
+        if(too_small) {
+            if((key=='q'||key=='Q') && exit_draft(false)==2){free(selected);return 2;}
+            continue;
+        }
         if(key==KEY_DOWN || key=='j') {if(cursor+1<g->count)cursor++;number=0;}
         if(key==KEY_UP || key=='k') {if(cursor)cursor--;number=0;}
         if(key==KEY_NPAGE) {size_t step=LINES>8?(size_t)LINES-8:1;cursor=cursor+step<g->count?cursor+step:g->count-1;}
@@ -211,7 +230,7 @@ static int choose_categories(UI *ui,const char *action) {
             number=0;advance=false;
         }
         if(key=='q'||key=='Q') {
-            int decision=exit_draft();
+            int decision=exit_draft(false);
             if(decision==2){free(selected);return 2;}
             advance=decision==1;
         }

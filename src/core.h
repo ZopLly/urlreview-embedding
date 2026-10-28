@@ -22,6 +22,7 @@ typedef struct {
     dev_t input_dev;
     ino_t input_ino;
 } Store;
+typedef enum { SAVE_FAILED=0, SAVE_OK=1, SAVE_UNCERTAIN=2 } SaveResult;
 
 bool table_parse(const char *text, size_t len, char delimiter, Table *t, char err[ERR_SIZE]);
 bool table_read(const char *path, const char *encoding, char delimiter, Table *t, char err[ERR_SIZE]);
@@ -35,6 +36,6 @@ char *str_copy(const char *s);
 const char *cell(const Table *t, size_t row, int column);
 size_t reviewed_count(const Table *t);
 bool store_open(Store *s, const char *input, const char *output, const char *encoding, char delimiter, char err[ERR_SIZE]);
-bool store_commit(Store *s, size_t row, const char *action, const char *label, char err[ERR_SIZE]);
+SaveResult store_commit(Store *s, size_t row, const char *action, const char *label, char err[ERR_SIZE]);
 void store_close(Store *s);
 #endif

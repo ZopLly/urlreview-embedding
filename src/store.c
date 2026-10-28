@@ -42,11 +42,14 @@ static bool unchanged(Store *s, char err[ERR_SIZE]) {
     if (!ok) snprintf(err,ERR_SIZE,"Рабочая копия изменена другой программой. Запись отменена; перезапустите приложение.");
     return ok;
 }
-static bool atomic_write(Store *s, const char *data, size_t n, char err[ERR_SIZE]) {
-    if (!unchanged(s,err)) return false;
+static SaveResult atomic_write(Store *s, const char *data, size_t n, char err[ERR_SIZE]) {
+    if (!unchanged(s,err)) return SAVE_FAILED;
+    char *dir=str_copy(s->output), *slash=strrchr(dir,'/'); *slash=0;
+    int dirfd=open(*dir?dir:"/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);free(dir);
+    if(dirfd<0) {snprintf(err,ERR_SIZE,"Не удалось открыть каталог для синхронизации: %s",strerror(errno));return SAVE_FAILED;}
     char *temp=mem_alloc(strlen(s->output)+16); sprintf(temp,"%s.tmp.XXXXXX",s->output);
     int fd=mkstemp(temp);
-    if (fd<0) { snprintf(err,ERR_SIZE,"Не удалось создать временный файл: %s",strerror(errno)); free(temp); return false; }
+    if (fd<0) { snprintf(err,ERR_SIZE,"Не удалось создать временный файл: %s",strerror(errno)); free(temp);close(dirfd); return SAVE_FAILED; }
     size_t pos=0; bool ok=true;
     while (pos<n) {
         ssize_t k=write(fd,data+pos,n-pos);
@@ -59,15 +62,20 @@ static bool atomic_write(Store *s, const char *data, size_t n, char err[ERR_SIZE
     if (!ok) snprintf(err,ERR_SIZE,"Ошибка записи: %s",strerror(errno));
     if (ok) ok=unchanged(s,err);
     if (ok && rename(temp,s->output)!=0) { snprintf(err,ERR_SIZE,"Не удалось заменить рабочую копию: %s",strerror(errno)); ok=false; }
+    SaveResult result=ok?SAVE_OK:SAVE_FAILED;
     if (!ok) unlink(temp);
     else {
         free(s->snapshot); s->snapshot=mem_alloc(n+1); memcpy(s->snapshot,data,n); s->snapshot_len=n;
-        char *dir=str_copy(s->output), *slash=strrchr(dir,'/'); *slash=0;
-        int dirfd=open(*dir?dir:"/",O_RDONLY|O_DIRECTORY);
-        if (dirfd>=0) { if (fsync(dirfd)!=0) snprintf(err,ERR_SIZE,"Данные сохранены, но fsync каталога недоступен."); close(dirfd); }
-        free(dir);
+        if(fsync(dirfd)!=0) {
+            result=SAVE_UNCERTAIN;
+            snprintf(err,ERR_SIZE,"Файл уже заменён, но диск не подтвердил синхронизацию каталога: %s. Решение есть в файле; надёжность при сбое питания не подтверждена. Повторите сохранение или проверьте копию перед выходом.",strerror(errno));
+        }
     }
-    free(temp); return ok;
+    close(dirfd);free(temp);return result;
+}
+static bool parse_bytes(const char *raw,size_t n,const char *encoding,char delimiter,Table *t,char err[ERR_SIZE]) {
+    size_t m;char *utf=convert_text(raw,n,encoding,"UTF-8",&m,err);if(!utf)return false;
+    bool ok=table_parse(utf,m,delimiter,t,err);free(utf);return ok;
 }
 static bool compatible(const Table *a,const Table *b) {
     if(a->count!=b->count || a->columns!=b->columns) return false;
@@ -79,6 +87,7 @@ static bool compatible(const Table *a,const Table *b) {
 }
 bool store_open(Store *s,const char *input,const char *output,const char *encoding,char delimiter,char err[ERR_SIZE]) {
     memset(s,0,sizeof *s); s->lock_fd=-1; err[0]=0;
+    char *source_bytes=NULL;size_t source_len=0;
     s->input=realpath(input,NULL);
     if(!s->input) { snprintf(err,ERR_SIZE,"Исходник недоступен: %s",strerror(errno)); goto fail; }
     struct stat st;
@@ -90,35 +99,36 @@ bool store_open(Store *s,const char *input,const char *output,const char *encodi
     char *lock=mem_alloc(strlen(s->output)+6); sprintf(lock,"%s.lock",s->output);
     s->lock_fd=open(lock,O_CREAT|O_RDWR|O_CLOEXEC|O_NOFOLLOW,0600); free(lock);
     if(s->lock_fd<0 || flock(s->lock_fd,LOCK_EX|LOCK_NB)!=0) { snprintf(err,ERR_SIZE,"Рабочая копия занята другим экземпляром или блокировка недоступна."); goto fail; }
-    if(!table_read(s->input,encoding,delimiter,&s->table,err)) goto fail;
+    source_bytes=read_bytes(s->input,&source_len,err);if(!source_bytes)goto fail;
+    if(!parse_bytes(source_bytes,source_len,encoding,delimiter,&s->table,err)) goto fail;
     if(lstat(s->output,&st)==0) {
         if(!protected_path(s,err)) goto fail;
         Table resumed={0};
-        if(!table_read(s->output,encoding,delimiter,&resumed,err)) goto fail;
+        s->snapshot=read_bytes(s->output,&s->snapshot_len,err);if(!s->snapshot)goto fail;
+        if(!parse_bytes(s->snapshot,s->snapshot_len,encoding,delimiter,&resumed,err)) goto fail;
         if(!compatible(&s->table,&resumed)) { table_free(&resumed); snprintf(err,ERR_SIZE,"Рабочая копия не соответствует исходнику: записи или неизменяемые столбцы отличаются."); goto fail; }
         table_free(&s->table); s->table=resumed;
-        s->snapshot=read_bytes(s->output,&s->snapshot_len,err); if(!s->snapshot) goto fail;
     } else {
-        size_t n; char *raw=read_bytes(s->input,&n,err); if(!raw) goto fail;
-        bool ok=atomic_write(s,raw,n,err); free(raw); if(!ok) goto fail;
+        if(atomic_write(s,source_bytes,source_len,err)!=SAVE_OK)goto fail;
     }
+    free(source_bytes);
     return true;
-fail: store_close(s); return false;
+fail: free(source_bytes);store_close(s); return false;
 }
-bool store_commit(Store *s,size_t row,const char *action,const char *label,char err[ERR_SIZE]) {
+SaveResult store_commit(Store *s,size_t row,const char *action,const char *label,char err[ERR_SIZE]) {
     err[0]=0;
     if(!row || row>=s->table.count || (strcmp(action,"OK") && strcmp(action,"ERROR") && strcmp(action,"NOT_DESC"))) {
-        snprintf(err,ERR_SIZE,"Недопустимая запись или действие."); return false;
+        snprintf(err,ERR_SIZE,"Недопустимая запись или действие."); return SAVE_FAILED;
     }
     char **a=&s->table.rows[row].cells[s->table.col[ACTION]], **l=&s->table.rows[row].cells[s->table.col[LABEL]];
     char *old_a=*a,*old_l=*l;
     *a=str_copy(action); *l=str_copy(label);
     size_t n,m; char *utf=table_serialize(&s->table,&n);
     char *raw=convert_text(utf,n,"UTF-8",s->encoding,&m,err); free(utf);
-    bool ok=raw && atomic_write(s,raw,m,err); free(raw);
-    if(ok) { free(old_a); free(old_l); }
+    SaveResult result=raw?atomic_write(s,raw,m,err):SAVE_FAILED; free(raw);
+    if(result!=SAVE_FAILED) { free(old_a); free(old_l); }
     else { free(*a); free(*l); *a=old_a; *l=old_l; }
-    return ok;
+    return result;
 }
 void store_close(Store *s) {
     table_free(&s->table); free(s->input);free(s->output);free(s->encoding);free(s->snapshot);
