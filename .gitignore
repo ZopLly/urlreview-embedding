@@ -1,0 +1,13 @@
+/build/
+/url-review
+/work/
+/private/
+/results/
+*.lock
+*.tmp.*
+*.npz
+*.npy
+*.safetensors
+*.gguf
+*.csv
+!demo/synthetic.csv
