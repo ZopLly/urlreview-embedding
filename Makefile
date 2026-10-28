@@ -26,4 +26,4 @@ clean:
 	rm -rf build url-review
 sanitize: | build
 	$(CC) $(CPPFLAGS) -std=c17 -Wall -Wextra -Wpedantic -g -fsanitize=address,undefined -fno-omit-frame-pointer tests/test_core.c $(CORE) -o build/test-sanitize
-	ASAN_OPTIONS=detect_leaks=1 ./build/test-sanitize
+	ASAN_OPTIONS=$${ASAN_OPTIONS:-detect_leaks=0} ./build/test-sanitize

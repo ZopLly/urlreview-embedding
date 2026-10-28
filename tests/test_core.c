@@ -68,6 +68,12 @@ static void test_store(void) {
     assert(!store_commit(&s,0,"OK","",error));
     size_t n; char *saved=read_bytes(output,&n,error); assert(saved);
     assert(store_commit(&s,1,"OK","",error)); assert(reviewed_count(&s.table)==1);
+    if(geteuid()!=0) {
+        assert(chmod(dir,0500)==0);
+        assert(!store_commit(&s,2,"OK","",error));
+        assert(strcmp(cell(&s.table,2,ACTION),"")==0);
+        assert(chmod(dir,0700)==0);
+    }
     write_file(output,"external edit\n");
     assert(!store_commit(&s,2,"OK","",error)); assert(strcmp(cell(&s.table,2,ACTION),"")==0);
     store_close(&s);

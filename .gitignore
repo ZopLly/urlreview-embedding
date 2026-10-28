@@ -11,3 +11,5 @@
 *.gguf
 *.csv
 !demo/synthetic.csv
+__pycache__/
+*.pyc
