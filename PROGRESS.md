@@ -41,3 +41,9 @@ Final: Ruling: reviewer validated guide structure, not PDF semantic fidelity —
 Task 4: complete — final warnings-as-errors build; make test (4 C binaries + 12 Python integration tests) and make sanitize passed. Real demo launcher and 5000 synthetic records (~108 MiB) checked. Detailed evidence: docs/verification.md.
 
 Final outcome: keep new local implementation branch and source directory in place, export portable source archive; no existing base branch/upstream to merge into, no push requested. Embeddings remain explicitly next-stage scope.
+
+## Дополнение: открытие сайта
+
+2026-10-28: по запросу пользователя добавляем O/клик на домен → браузер по умолчанию. Текстовый браузер/встраивание JavaScript-страниц не добавляются. Дизайн малого изменения: docs/browser-opening.md.
+
+RED: PTY-тесты открытия по O/клику и отказа file:// не проходили до реализации, модуля browser.c не было. GREEN: модуль нормализует только HTTP(S), posix_spawnp передаёт URL одним аргументом без shell, UI запускает асинхронно и следит за результатом. Проверки используют подставной локальный xdg-open, без настоящего браузера.

@@ -119,5 +119,48 @@ class UITests(unittest.TestCase):
         self.assertEqual(self.rows()[1][3],'ERROR')
         t.send(b'\x1b');time.sleep(.1);t.send('\n');t.wait('Второй сайт')
         t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+    def browser_environment(self):
+        bindir=self.root/'bin';bindir.mkdir()
+        opener=bindir/'xdg-open'
+        opener.write_text('#!/bin/sh\nprintf "%s\\n" "$#" "$1" >> "$URL_REVIEW_BROWSER_LOG"\n')
+        opener.chmod(0o700)
+        log=self.root/'browser.log'
+        return log,{'PATH':str(bindir)+os.pathsep+os.environ.get('PATH',''), 'URL_REVIEW_BROWSER_LOG':str(log)}
+    def wait_browser_calls(self,log,count):
+        end=time.monotonic()+4
+        while time.monotonic()<end:
+            lines=log.read_text().splitlines() if log.exists() else []
+            if len(lines)>=count*2:return lines
+            time.sleep(.03)
+        self.fail('Browser request was not received')
+    def test_browser_opens_only_on_key_or_domain_click(self):
+        log,env=self.browser_environment()
+        self.term=Terminal([self.input,self.output,'--guide',self.guide],env)
+        t=self.term;t.wait('one.example');self.assertFalse(log.exists())
+        t.send('o');self.assertEqual(self.wait_browser_calls(log,1),['1','https://one.example'])
+        t.send(b'\x1b[<0;3;4M\x1b[<0;3;4m')
+        self.assertEqual(self.wait_browser_calls(log,2),['1','https://one.example','1','https://one.example'])
+        t.send(b'\x1b[<0;3;9M\x1b[<0;3;9m');time.sleep(.1)
+        self.assertEqual(len(log.read_text().splitlines()),4)
+        self.assertEqual(self.rows()[1][3],'')
+        t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+    def test_browser_rejects_non_http_scheme(self):
+        with self.input.open('w',newline='') as f:
+            csv.writer(f,delimiter=';').writerows([HEADER,['file:///tmp/fiction','shopping','','','Test']])
+        self.original=self.input.read_bytes()
+        log,env=self.browser_environment()
+        self.term=Terminal([self.input,self.output,'--guide',self.guide],env)
+        t=self.term;t.wait('file:///tmp/fiction');t.send('o');t.wait('HTTP')
+        self.assertFalse(log.exists());t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+    def test_browser_launch_failure_leaves_record_unchanged(self):
+        self.term=Terminal([self.input,self.output,'--guide',self.guide],{'PATH':str(self.root/'missing-bin')})
+        t=self.term;t.wait('one.example');t.send('o');t.wait('xdg-open')
+        self.assertEqual(self.rows()[1][3],'');t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
+    def test_mouse_wheel_scrolls_description(self):
+        with self.input.open('w',newline='') as f:
+            csv.writer(f,delimiter=';').writerows([HEADER,['wheel.example','shopping','','','\n'.join([f'line-{i}' for i in range(20)]+['MOUSE-WHEEL-TAIL'])]])
+        self.original=self.input.read_bytes()
+        t=self.start();t.wait('wheel.example');t.send(b'\x1b[<65;3;9M');t.wait('MOUSE-WHEEL-TAIL')
+        t.send('q');self.assertEqual(t.proc.wait(timeout=3),0)
 
 if __name__=='__main__':unittest.main()

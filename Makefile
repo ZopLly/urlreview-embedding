@@ -24,13 +24,17 @@ build/test-guide: tests/test_guide.c src/guide.c src/guide.h $(CORE) | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_guide.c src/guide.c $(CORE) -o $@
 test-guide: build/test-guide
 	./build/test-guide
-url-review: src/main.c src/ui.c src/guide.c $(CORE) src/core.h src/guide.h src/ui.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(NCURSES_CFLAGS) src/main.c src/ui.c src/guide.c $(CORE) $(NCURSES_LIBS) -o $@
+build/test-browser: tests/test_browser.c src/browser.c src/browser.h $(CORE) | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_browser.c src/browser.c $(CORE) -o $@
+test-browser: build/test-browser
+	./build/test-browser
+url-review: src/main.c src/ui.c src/guide.c src/browser.c $(CORE) src/core.h src/guide.h src/ui.h src/browser.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(NCURSES_CFLAGS) src/main.c src/ui.c src/guide.c src/browser.c $(CORE) $(NCURSES_LIBS) -o $@
 build/roundtrip: tests/roundtrip.c $(CORE) src/core.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/roundtrip.c $(CORE) -o $@
-build/url-review-sync: src/main.c src/ui.c src/guide.c $(CORE) tests/sync_fault.c | build
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(NCURSES_CFLAGS) src/main.c src/ui.c src/guide.c $(CORE) tests/sync_fault.c -Wl,--wrap=fsync $(NCURSES_LIBS) -o $@
-test: test-core test-guide url-review build/roundtrip build/url-review-sync
+build/url-review-sync: src/main.c src/ui.c src/guide.c src/browser.c $(CORE) tests/sync_fault.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(NCURSES_CFLAGS) src/main.c src/ui.c src/guide.c src/browser.c $(CORE) tests/sync_fault.c -Wl,--wrap=fsync $(NCURSES_LIBS) -o $@
+test: test-core test-guide test-browser url-review build/roundtrip build/url-review-sync
 	python3 -m unittest discover -s tests -p 'test_*.py' -v
 clean:
 	rm -rf build url-review

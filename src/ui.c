@@ -1,11 +1,14 @@
 #define _XOPEN_SOURCE_EXTENDED 1
 #include "ui.h"
+#include "browser.h"
 #include <ctype.h>
 #include <curses.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <wchar.h>
 
 typedef struct { wchar_t **items; size_t count; int width; } Lines;
@@ -17,8 +20,11 @@ typedef struct {
     size_t row, scroll;
     Lines description;
     char message[ERR_SIZE];
+    pid_t browsers[16];
+    size_t browser_count;
 } UI;
 static volatile sig_atomic_t stopped=0;
+static MEVENT last_mouse;
 static void interrupted(int signo) { (void)signo; stopped=1; }
 static wchar_t *wide_text(const char *s) {
     size_t n=strlen(s); wchar_t *w=mem_alloc((n+1)*sizeof *w);
@@ -90,7 +96,49 @@ static void scroll_key(int key,size_t *scroll,size_t count,int height) {
     if(key==KEY_END || key=='G') *scroll=max;
     if(*scroll>max) *scroll=max;
 }
-static int read_key(void) { return stopped?'q':getch(); }
+static int read_key(void) {
+    if(stopped)return 'q';
+    int key=getch();
+    if(key==KEY_MOUSE) {
+        if(getmouse(&last_mouse)!=OK)return ERR;
+        if(last_mouse.bstate&BUTTON4_PRESSED)return KEY_UP;
+        if(last_mouse.bstate&BUTTON5_PRESSED)return KEY_DOWN;
+    }
+    return key;
+}
+static void poll_browsers(UI *ui) {
+    for(size_t i=0;i<ui->browser_count;) {
+        int status=0;pid_t result=waitpid(ui->browsers[i],&status,WNOHANG);
+        if(result>0 || (result<0 && errno==ECHILD)) {
+            if(result>0) {
+                if(WIFEXITED(status) && WEXITSTATUS(status)==0)snprintf(ui->message,sizeof ui->message,"Запрос передан браузеру. Можно продолжать разметку.");
+                else snprintf(ui->message,sizeof ui->message,"Браузер не принял запрос. Проверьте браузер по умолчанию и xdg-open.");
+            }
+            ui->browsers[i]=ui->browsers[--ui->browser_count];
+        } else i++;
+    }
+}
+static void open_site(UI *ui) {
+    poll_browsers(ui);
+    if(ui->browser_count==sizeof ui->browsers/sizeof *ui->browsers) {
+        snprintf(ui->message,sizeof ui->message,"Слишком много запросов к браузеру. Дождитесь завершения предыдущих.");return;
+    }
+    pid_t pid;
+    if(browser_start(cell(&ui->store->table,ui->row,DOMAIN),&pid,ui->message)) {
+        ui->browsers[ui->browser_count++]=pid;
+        snprintf(ui->message,sizeof ui->message,"Открываю сайт в браузере…");
+    }
+}
+static bool domain_clicked(const UI *ui) {
+    if(!(last_mouse.bstate&BUTTON1_PRESSED) || last_mouse.y!=3 || last_mouse.x<2)return false;
+    wchar_t *w=wide_text(cell(&ui->store->table,ui->row,DOMAIN));int width=0;
+    for(size_t i=0;w[i];i++) {
+        int size=wcwidth(w[i]);if(size<0)size=1;
+        if(width+size>COLS-4)break;
+        width+=size;
+    }
+    free(w);return last_mouse.x<2+width;
+}
 static void viewer(const char *title,const char *body) {
     Lines lines={0};size_t scroll=0;
     while(!stopped) {
@@ -275,6 +323,9 @@ static void general_help(void) {
         "S — отложить до конца прохода, без изменения CSV. R на итоговом экране возвращает отложенные.\n"
         "B — назад по истории текущего сеанса. Q — выход.\n"
         "↑↓, PageUp/PageDown, Home/End — прокрутка описания.\n\n"
+        "O или клик по домену — открыть сайт в браузере по умолчанию.\n"
+        "Без указания протокола используется HTTPS. Только HTTP/HTTPS; таблица и описание браузеру не передаются.\n"
+        "Клик зависит от поддержки мыши терминалом; клавиша O доступна всегда. Колесо прокручивает текст.\n\n"
         "Решение сохраняется только после подтверждения и успешной записи. Исходный файл не меняется.\n"
         "При повторном запуске укажите те же исходник, рабочую копию, кодировку и разделитель.\n"
         "Не открывайте рабочую копию в другом редакторе одновременно.\n\n"
@@ -291,8 +342,8 @@ static void render(UI *ui) {
         text(11,2,"V — просмотр с первой записи   H — справка   Q — выход",COLS-4);
         text(LINES-2,2,ui->message,COLS-4);refresh();return;
     }
-    snprintf(top,sizeof top,"Запись %zu    Домен:",ui->row);text(2,2,top,COLS-4);
-    attron(A_BOLD);text(3,2,cell(t,ui->row,DOMAIN),COLS-4);attroff(A_BOLD);
+    snprintf(top,sizeof top,"Запись %zu    Домен — клик / O: открыть в браузере",ui->row);text(2,2,top,COLS-4);
+    attron(A_BOLD|A_UNDERLINE|COLOR_PAIR(1));text(3,2,cell(t,ui->row,DOMAIN),COLS-4);attroff(A_BOLD|A_UNDERLINE|COLOR_PAIR(1));
     text(4,2,"Исходный class:",COLS-4);text(4,18,cell(t,ui->row,CLASS),COLS-20);
     snprintf(top,sizeof top,"Действие: %s",*cell(t,ui->row,ACTION)?cell(t,ui->row,ACTION):"не проверено");text(5,2,top,COLS-4);
     text(6,2,"label:",COLS-4);text(6,10,cell(t,ui->row,LABEL),COLS-12);
@@ -311,11 +362,13 @@ int ui_run(Store *store,const Guide *guide) {
     void (*old_int)(int)=signal(SIGINT,interrupted),(*old_term)(int)=signal(SIGTERM,interrupted);
     if(!initscr()) {fputs("Не удалось открыть терминальный интерфейс.\n",stderr);return 1;}
     cbreak();noecho();keypad(stdscr,TRUE);curs_set(0);timeout(100);set_escdelay(25);
+    mousemask(BUTTON1_PRESSED|BUTTON4_PRESSED|BUTTON5_PRESSED,NULL);
     if(has_colors()) {start_color();use_default_colors();init_pair(1,COLOR_CYAN,-1);}
     UI ui={0};ui.store=store;ui.guide=guide;ui.deferred=mem_alloc(store->table.count*sizeof *ui.deferred);
     visit(&ui,pending(&ui,0));
     bool quit=false;
     while(!quit && !stopped) {
+        poll_browsers(&ui);
         if(!small_screen()) render(&ui);
         int key=read_key();if(key==ERR) continue;
         if(key=='q'||key=='Q') {quit=true;continue;}
@@ -327,6 +380,7 @@ int ui_run(Store *store,const Guide *guide) {
             if((key=='v'||key=='V') && store->table.count>1) visit(&ui,1);
             continue;
         }
+        if(key=='o'||key=='O'||(key==KEY_MOUSE && domain_clicked(&ui))) {open_site(&ui);continue;}
         if(key>='1'&&key<='3') {
             static const char *actions[]={"OK","ERROR","NOT_DESC"};
             int result=choose_categories(&ui,actions[key-'1']);
@@ -335,6 +389,6 @@ int ui_run(Store *store,const Guide *guide) {
         } else if(key=='s'||key=='S') {ui.deferred[ui.row]=true;visit(&ui,pending(&ui,ui.row));}
         else scroll_key(key,&ui.scroll,ui.description.count,LINES-12);
     }
-    lines_free(&ui.description);free(ui.history);free(ui.deferred);endwin();
+    lines_free(&ui.description);free(ui.history);free(ui.deferred);mousemask(0,NULL);endwin();
     signal(SIGINT,old_int);signal(SIGTERM,old_term);return stopped?130:0;
 }
