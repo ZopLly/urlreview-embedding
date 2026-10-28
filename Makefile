@@ -14,6 +14,10 @@ build/test-core: tests/test_core.c $(CORE) src/core.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_core.c $(CORE) -o $@
 test-core: build/test-core
 	./build/test-core
+build/test-guide: tests/test_guide.c src/guide.c src/guide.h $(CORE) | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_guide.c src/guide.c $(CORE) -o $@
+test-guide: build/test-guide
+	./build/test-guide
 url-review: src/main.c src/ui.c src/guide.c $(CORE) src/core.h src/guide.h src/ui.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(NCURSES_CFLAGS) src/main.c src/ui.c src/guide.c $(CORE) $(NCURSES_LIBS) -o $@
 test: test-core test-guide url-review
