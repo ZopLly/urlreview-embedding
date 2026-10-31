@@ -3,6 +3,7 @@ import copy
 from io import BytesIO
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,30 @@ import xlsx_io
 
 
 class WorkbookTests(unittest.TestCase):
+    def test_save_preserves_already_compressed_unchanged_members(self):
+        # Иное начальное сжатие обнаружит даже ненужную распаковку/повторную упаковку без изменения значений.
+        initial=BytesIO()
+        with ZipFile(BytesIO(book())) as source,ZipFile(initial,'w') as target:
+            for entry in source.infolist():
+                target.writestr(entry,source.read(entry),compresslevel=1)
+        raw=initial.getvalue()
+        rows=copy.deepcopy(xlsx_io.read_workbook(raw).rows)
+        rows[1][2:4]=['Travel','ERROR']
+        saved=xlsx_io.patch_workbook(raw,rows)
+
+        def compressed(data,entry):
+            # В локальном ZIP-заголовке после 26 байтов идут длины имени и extra field.
+            names,extra=struct.unpack_from('<HH',data,entry.header_offset+26)
+            start=entry.header_offset+30+names+extra
+            return data[start:start+entry.compress_size]
+
+        with ZipFile(BytesIO(raw)) as before,ZipFile(BytesIO(saved)) as after:
+            for entry in before.infolist():
+                if entry.filename!='xl/worksheets/sheet1.xml':
+                    self.assertEqual(compressed(raw,entry),compressed(saved,after.getinfo(entry.filename)),entry.filename)
+            self.assertIsNone(after.testzip())
+        self.assertEqual(xlsx_io.read_workbook(saved).rows,rows)
+
     def test_shared_strings_sparse_rows_and_long_description(self):
         view = xlsx_io.read_workbook(book())
         self.assertEqual(view.sheet, 'Проверка')

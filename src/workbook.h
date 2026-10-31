@@ -7,5 +7,5 @@ bool workbook_path(const char *path);
 // Разбирает байты книги и заполняет Table, имя листа и физические номера строк.
 bool workbook_read(const char *raw,size_t len,const char *sheet,Table *table,char err[ERR_SIZE]);
 // Возвращает новые байты книги, меняя лишь action/label относительно последнего снимка.
-char *workbook_write(const char *raw,size_t len,const Table *table,size_t *out_len,char err[ERR_SIZE]);
+char *workbook_write(const char *raw,size_t len,const Table *table,size_t row,unsigned changed,size_t *out_len,char err[ERR_SIZE]);
 #endif

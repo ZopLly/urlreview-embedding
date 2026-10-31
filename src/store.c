@@ -270,10 +270,13 @@ SaveResult store_commit(Store *s,size_t row,const char *action,const char *label
     char *old_a=*a,*old_l=*l;
     // Пояснение: Устанавливаем независимые копии новых action и label в таблицу.
     *a=str_copy(action); *l=str_copy(label);
-    // Пояснение: Сериализуем всю таблицу из памяти в UTF-8 CSV.
+    // Готовим новые байты книги или CSV до атомарной записи.
     size_t m;char *raw;
     // Для XLSX точечно меняем ячейки последнего принятого снимка книги.
-    if(s->xlsx)raw=workbook_write(s->snapshot,s->snapshot_len,&s->table,&m,err);
+    if(s->xlsx) {
+        unsigned changed=(strcmp(old_a,action)?1u:0u)|(strcmp(old_l,label)?2u:0u);
+        raw=workbook_write(s->snapshot,s->snapshot_len,&s->table,row,changed,&m,err);
+    }
     else {
         // Для CSV сохраняем прежний путь: сериализация UTF-8 → исходная кодировка.
         size_t n;char *utf=table_serialize(&s->table,&n);

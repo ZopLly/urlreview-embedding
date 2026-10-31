@@ -25,6 +25,8 @@ from xml.parsers import expat
 from xml.sax.saxutils import escape
 # XLSX — ZIP-контейнер с XML; ZipInfo сохраняет параметры неизменённых частей.
 from zipfile import ZipFile, BadZipFile
+# Большие неизменяемые части XLSX переносим уже сжатыми, вместо повторной упаковки при каждом решении.
+from zip_update import replace_member
 
 # Стандартные пространства имён SpreadsheetML и связей OOXML.
 NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
@@ -317,6 +319,41 @@ def _check_formula_groups(spans, number, column):
                 raise ValueError('Ячейка action/label входит в связанную или массивную формулу. Сначала замените формулы в этих столбцах значениями в Excel.')
 
 
+def _replace_cells(raw, archive, part, changes):
+    """Общий путь замены: формулы, границы XML и сохранение остальных частей ZIP."""
+    original = archive.read(part)
+    # Expat находит только реальные SpreadsheetML-ячейки, а не похожий текст комментариев.
+    spans = _worksheet_spans(original)
+    replacements = []
+    for number, wanted in changes.items():
+        if number not in spans:
+            raise ValueError('Не найдены изменяемые строки XLSX; запись отменена.')
+        row = spans[number]
+        by_column = {cell['column']: cell for cell in row['cells']}
+        for column, value in sorted(wanted.items()):
+            # Не удаляем определение общей/массивной формулы и не ломаем её зависимые ячейки.
+            _check_formula_groups(spans, number, column)
+            reference = f'{_letter(column)}{number}'
+            if column in by_column:
+                cell = by_column[column]
+                new = _inline(cell['tag'], cell['attrs'], reference, value).encode('utf-8')
+                replacements.append((cell['start'], cell['end'], new))
+            else:
+                # Вставляем перед следующей настоящей ячейкой либо сразу после последней.
+                following = [c for c in row['cells'] if c['column'] > column]
+                position = following[0]['start'] if following else (row['cells'][-1]['end'] if row['cells'] else row['open_end'])
+                new = _inline(row['prefix']+'c', '', reference, value).encode('utf-8')
+                replacements.append((position, position, new))
+    payload = original
+    # Стабильная сортировка сохраняет порядок нескольких вставок в одно смещение.
+    for start, end, new in reversed(sorted(replacements, key=lambda item: (item[0], item[1]))):
+        payload = payload[:start] + new + payload[end:]
+    result = replace_member(raw, archive, part, payload)
+    if len(result) > LIMIT:
+        raise ValueError('Результат XLSX превышает 256 МиБ.')
+    return result
+
+
 def patch_workbook(raw, rows, sheet=None):
     """Меняет лишь отличающиеся action/label; неизменяемые значения должны совпадать."""
     view = read_workbook(raw, sheet)
@@ -336,46 +373,67 @@ def patch_workbook(raw, rows, sheet=None):
     if not changes:
         return raw
     with _archive(raw) as archive:
-        original = archive.read(view.part)
-        # Expat находит только реальные SpreadsheetML-ячейки, а не похожий текст комментариев.
-        spans = _worksheet_spans(original)
-        replacements = []
-        for number, wanted in changes.items():
-            if number not in spans:
-                raise ValueError('Не найдены изменяемые строки XLSX; запись отменена.')
-            row = spans[number]
-            by_column = {cell['column']: cell for cell in row['cells']}
-            for column, value in sorted(wanted.items()):
-                # Не удаляем определение общей/массивной формулы и не ломаем её зависимые ячейки.
-                _check_formula_groups(spans, number, column)
-                reference = f'{_letter(column)}{number}'
-                if column in by_column:
-                    cell = by_column[column]
-                    new = _inline(cell['tag'], cell['attrs'], reference, value).encode('utf-8')
-                    replacements.append((cell['start'], cell['end'], new))
-                else:
-                    # Вставляем перед следующей настоящей ячейкой либо сразу после последней.
-                    following = [c for c in row['cells'] if c['column'] > column]
-                    position = following[0]['start'] if following else (row['cells'][-1]['end'] if row['cells'] else row['open_end'])
-                    new = _inline(row['prefix']+'c', '', reference, value).encode('utf-8')
-                    replacements.append((position, position, new))
-        payload = original
-        # Стабильная сортировка сохраняет порядок нескольких вставок в одно смещение.
-        for start, end, new in reversed(sorted(replacements, key=lambda item: (item[0], item[1]))):
-            payload = payload[:start] + new + payload[end:]
-        out = BytesIO()
-        with ZipFile(out, 'w') as target:
-            target.comment = archive.comment
-            for entry in archive.infolist():
-                target.writestr(entry, payload if entry.filename == view.part else archive.read(entry))
-        result = out.getvalue()
-        if len(result) > LIMIT:
-            raise ValueError('Результат XLSX превышает 256 МиБ.')
-        # Повторное чтение не позволяет сообщить успех, если записались другие значения.
+        result = _replace_cells(raw, archive, view.part, changes)
+        # Полный API сохраняет полную проверку таблицы для независимых вызывающих модулей.
         verified = read_workbook(result, view.sheet)
         if verified.rows != rows or verified.physical_rows != view.physical_rows:
             raise ValueError('Проверка сохранённого XLSX не пройдена; замена отменена.')
         return result
+
+
+def patch_decision(raw, sheet, number, action_column, label_column, action, label, changed=3):
+    """Внутренний протокол C: координаты взяты из уже проверенной при открытии Table.
+
+    Снимок защищён Store от внешних правок. Произвольную новую таблицу этот путь
+    не принимает: изменяются только две переданные ячейки одной записи. Описания
+    и sharedStrings не распаковываются; проверяем записанные ячейки прямо в XML.
+    """
+    if (changed not in (1, 2, 3) or not sheet or not 1 <= number <= 1048576 or
+            not 0 <= action_column < 16384 or not 0 <= label_column < 16384 or
+            action_column == label_column or action not in ('OK', 'ERROR', 'NOT_DESC')):
+        raise ValueError('Неверные параметры решения XLSX.')
+    try:
+        with _archive(raw) as archive:
+            workbook = _xml(archive.read('xl/workbook.xml'))
+            relations = _xml(archive.read('xl/_rels/workbook.xml.rels'))
+            sheets = [s for s in workbook.findall(f'{{{NS}}}sheets/{{{NS}}}sheet') if s.get('name') == sheet]
+            if len(sheets) != 1:
+                raise ValueError('Не найден единственный выбранный лист XLSX.')
+            links = [r for r in relations if r.get('Id') == sheets[0].get(f'{{{REL}}}id')
+                     and r.get('Type', '').endswith('/worksheet') and r.get('TargetMode') != 'External']
+            if len(links) != 1 or not links[0].get('Target'):
+                raise ValueError('Неверная связь выбранного листа XLSX.')
+            target = links[0].get('Target')
+            part = posixpath.normpath(target.lstrip('/') if target.startswith('/') else 'xl/' + target)
+            if not part.startswith('xl/') or part not in archive.namelist():
+                raise ValueError('Неверная внутренняя ссылка листа XLSX.')
+            # Маску вычисляет Store по прежним значениям до замены указателей Table.
+            wanted = {}
+            if changed & 1:
+                wanted[action_column] = action
+            if changed & 2:
+                wanted[label_column] = label
+            result = _replace_cells(raw, archive, part, {number: wanted})
+        # Читаем лист из готового ZIP: zipfile проверяет CRC изменённой части.
+        with _archive(result) as archive:
+            document = _xml(archive.read(part))
+        # Как и при первом чтении книги, отсутствующий r означает следующую строку.
+        rows, previous = [], 0
+        for row in document.findall(f'{{{NS}}}sheetData/{{{NS}}}row'):
+            previous = int(row.get('r', previous + 1))
+            if previous == number:
+                rows.append(row)
+        if len(rows) != 1:
+            raise ValueError('Проверка строки сохранённого XLSX не пройдена.')
+        for column, value in wanted.items():
+            reference = f'{_letter(column)}{number}'
+            cells = [c for c in rows[0].findall(f'{{{NS}}}c') if c.get('r') == reference]
+            if (len(cells) != 1 or cells[0].get('t') != 'inlineStr' or
+                    _text(cells[0].find(f'{{{NS}}}is')) != value):
+                raise ValueError('Проверка ячейки сохранённого XLSX не пройдена.')
+        return result
+    except (BadZipFile, ET.ParseError, expat.ExpatError, KeyError, UnicodeError, RuntimeError) as exc:
+        raise ValueError(f'Не удалось сохранить XLSX: {exc}') from exc
 
 
 def main():
@@ -393,6 +451,17 @@ def main():
             payload = struct.pack('<II', len(name), len(view.rows)) + name
             payload += struct.pack(f'<{len(view.rows)}I', *view.physical_rows)
             payload += text.getvalue().encode('utf-8')
+        elif mode == 'decision':
+            length = struct.unpack_from('<Q', data)[0]
+            if length > LIMIT or length + 32 > len(data):
+                raise ValueError('Неверный запрос сохранения XLSX.')
+            number, ac, lc, alen, llen, changed = struct.unpack_from('<6I', data, 8 + length)
+            offset = 32 + length
+            if offset + alen + llen != len(data):
+                raise ValueError('Неверная длина решения XLSX.')
+            action = data[offset:offset+alen].decode('utf-8')
+            label = data[offset+alen:].decode('utf-8')
+            payload = patch_decision(data[8:8+length], sheet, number, ac, lc, action, label, changed)
         elif mode == 'write':
             length = struct.unpack_from('<Q', data)[0]
             if length > LIMIT or length + 8 > len(data):

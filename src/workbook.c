@@ -46,7 +46,7 @@ static char *run_helper(const char *mode,const char *sheet,const char *raw,size_
     FILE *input=tmpfile(),*output=tmpfile();char *result=NULL;
     if(!input||!output){snprintf(err,ERR_SIZE,"Не удалось создать временный поток XLSX: %s",strerror(errno));goto finish;}
     if(extra) {
-        // При записи передаём uint64 длину шаблона, сам XLSX, затем новый CSV.
+        // При записи передаём uint64 длину снимка, сам XLSX, затем маленькое решение.
         unsigned char length[8];
         for(unsigned i=0;i<8;i++)length[i]=(unsigned char)((uint64_t)n>>(8*i));
         if(fwrite(length,1,8,input)!=8)goto io_error;
@@ -119,9 +119,26 @@ finish:
     free(reply);return ok;
 }
 
-char *workbook_write(const char *raw,size_t len,const Table *table,size_t *out_len,char err[ERR_SIZE]) {
-    // Сериализатор C отдаёт значения, Python проверит неизменяемые ячейки перед заменой action/label.
-    size_t csv_len;char *csv=table_serialize(table,&csv_len);
-    char *result=run_helper("write",table->sheet,raw,len,csv,csv_len,out_len,err);
-    free(csv);return result;
+char *workbook_write(const char *raw,size_t len,const Table *table,size_t row,unsigned changed,size_t *out_len,char err[ERR_SIZE]) {
+    // Table и координаты проверены при открытии. Отправляем только решение одной строки,
+    // чтобы не сериализовать и не разбирать заново все описания при каждом Enter.
+    if(!row||row>=table->count||!table->source_rows||!table->sheet) {
+        snprintf(err,ERR_SIZE,"Неверная запись для сохранения XLSX.");return NULL;
+    }
+    // Неизменённые ячейки, включая формулы с сохранённым значением, не переписываем.
+    if(!changed){char *copy=mem_alloc(len+1);memcpy(copy,raw,len);*out_len=len;return copy;}
+    const char *action=cell(table,row,ACTION),*label=cell(table,row,LABEL);
+    size_t alen=strlen(action),llen=strlen(label);
+    if(alen>UINT32_MAX||llen>UINT32_MAX||alen+llen>BRIDGE_LIMIT-24) {
+        snprintf(err,ERR_SIZE,"Решение XLSX слишком большое.");return NULL;
+    }
+    size_t n=24+alen+llen;char *request=mem_alloc(n);
+    uint32_t fields[6]={table->source_rows[row],(uint32_t)table->col[ACTION],
+                        (uint32_t)table->col[LABEL],(uint32_t)alen,(uint32_t)llen,changed};
+    // Шесть uint32: строка Excel, столбцы, длины UTF-8, маска изменений (1 action, 2 label).
+    for(size_t i=0;i<6;i++)for(unsigned b=0;b<4;b++)
+        request[4*i+b]=(char)(fields[i]>>(8*b));
+    memcpy(request+24,action,alen);memcpy(request+24+alen,label,llen);
+    char *result=run_helper("decision",table->sheet,raw,len,request,n,out_len,err);
+    free(request);return result;
 }
